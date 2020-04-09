@@ -1,0 +1,130 @@
+---
+title: "Predicting protein expression with model based boosting"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook for the "Springer chapter Tailoring codon usage to the underlying biology for protein expression optimization". When you execute code within the notebook, the results appear beneath the code. 
+
+This notebook relies on the `mboost` package. If you have not installed it, just run
+
+```{r}
+install.packages('mboost')
+```
+
+Our goal is to predict the protein expression based on sequence features. You can either start from scratch, but this means you have to calculate the sequence based predictors first, e.g. for a completely new organism, or you might want to re-train parts of the model for. 
+In both cases, you first of all need protein expression data. A good source for this is [paxdb](https://pax-db.org/).  
+
+```{r}
+require(mboost)
+```
+In the next step we read the joint data frame of protein abundance and sequence based predictors.
+
+```{r}
+x <- readRDS('yeast_clean.RDS')
+labels<-c('Log Protein Abundance',
+          'COSEM current',
+          'Average elongation rate',
+          'Length',
+          'Bottleneck index',
+          'Ramp index',
+          'Accuracy',
+          'foo',
+          'Log Transcript abundance',
+          'GC3 content',
+          '5\' RNA folding energy',
+          'Number of Hairpins',
+          'Effective Translation Time',
+          'Total Translation Time')
+names(labels) <- colnames(x)
+```
+
+Now, we split the data frame into training and testing set with a 70/30 split. For this we set a defined seed for reproducibility.
+
+```{r}
+set.seed(1234)
+
+## create train and test sets
+train.idx <- sample.int(nrow(x), size = floor(0.7 * nrow(x)), replace = FALSE)
+train <- x[train.idx, ]
+test <- x[-train.idx, ]
+
+```
+
+For actually fitting the model, we have some options: we can use a partial set of predictors, or choose a specific base function for every predictor. `mboost` allows us to pick between ordinary least square linear effects `bols`(in fact, `bols` also supports ordinary least square with categorical effects via dummy coding, group-wise interactions and more), B-splines, `bbs`; tree-based learners, `btree` and also let's us impose constraint on monotonicity by using `bmono` for monotonous B-splines. The latter is especially valuable if we have prior knowledge about the predictors, e.g., it would make sense to impose a monotonicity constraint on the transcript abundance, since it us unlikely that higher transcript abundance will ever lead to lower protein abundance if fitted for the whole organism.
+
+For trying out multiple models in parallel, we recommend the following way to create a vector of models
+```{r}
+model_fms <- c(paste0("lprot ~ bmono(COSEMcurrent) + bmono(AvgElRate) + BottleneckIndex + ",
+                      "Accuracy + RampIndex + FiveRnaFolding + bmono(TranscriptAbundance) + ",
+                      "GC3 + bols(NHairpins) + Length"),
+               paste0("lprot ~ bmono(COSEMcurrent) + bmono(AvgElRate) + BottleneckIndex + ",
+                      "Accuracy + RampIndex + FiveRnaFolding + ",
+                      "GC3 + bols(NHairpins) + Length"),
+               paste0("lprot ~ bmono(COSEMcurrent)+bmono(TranscriptAbundance)"),
+               paste0("lprot ~ bmono(COSEMcurrent) + bmono(AvgElRate) + BottleneckIndex + ",
+                      "Accuracy + RampIndex + FiveRnaFolding + bmono(TranscriptAbundance) + ",
+                      "GC3 + bols(NHairpins) "),
+               paste0("lprot ~ bols(COSEMcurrent) + bols(AvgElRate) + bols(BottleneckIndex) + ",
+                      "bols(Accuracy) + bols(RampIndex) + bols(FiveRnaFolding) + bols(TranscriptAbundance) + ",
+                      "GC3 + bols(NHairpins)"),
+               paste0("lprot ~ bmono(COSEMcurrent)"))
+names(model_fms) <- c("All variables", "Without Transcript Abundance", "Only COSEM and Transcript Abundance","Even More","Linear Approximation","Only current")
+
+model <- cvm <- r.squared <- vector("list", 6)
+names(model) <- names(cvm) <- names(r.squared) <- names(model_fms)
+```
+Fitting the individual models follows consists of three steps,
+
+  1. Set up the model with `gamboost` since we are using different base-learners. We run the optimization procedure for a maximum of `mstop = 500` steps and keep track of all intermediate models `[1,500]`
+  2. The model needs some protection against overfitting, this is achieved by detemining the optimal stopping iteration `mstop`.  There are multiple ways in which this can be done, we use the function `cvrisk` for performing crossvalidation.
+  3. Choosing the optimal `mstop` allows us to choose the most optimal model and calculate the R squared performance indicator on the test data.
+
+The calculation might take some time (a few minutes on a 2018 laptop).
+
+```{r}
+for (i in 1:length(model_fms)) {
+  ## fit model
+  model[[i]] <- gamboost(as.formula(model_fms[i]),
+                         data = train,
+                         control = boost_control(mstop = 500, trace = FALSE))
+  
+  ## use cross validation to obtain optimal stopping iteration
+  cvm[[i]] <- cvrisk(model[[i]])
+  plot(cvm[[i]], main = names(model_fms[i]))
+  ## set model to optimal stopping iteration
+  mstop(model[[i]]) <- mstop(cvm[[i]])
+  ## compute R2
+  suppressWarnings(r.squared[[i]] <- 1 - sum((test$lprot - predict(model[[i]], newdata = test))^2) / 
+                     sum((test$lprot - mean(test$lprot))^2))
+}
+# print R2
+r.squared
+```
+In addition, we can also show the predicted compared to the measured protein abundance.
+```{r}
+par(mfrow = c(3, 4), mar = c(5, 5, 0.5, 0.1))
+for (var in variable.names(model[[1]])) {
+  for (i in 1:length(model_fms)) {
+    ## plot effect estimate j
+    if (i == 1) {
+      plot(model[[i]], type = "l", which = var, ylim = c(-1,1),
+           xlab = labels[variable.names(model[[i]])], lwd = 1.5)
+    } else {
+      if (var %in% variable.names(model[[i]]))
+        lines(model[[i]], which = var, lty = i, col = i, lwd = 1.5)
+    }        
+  }
+}
+legend("topright", names(model_fms), title = "Variables in model", 
+       lty = 1:3, col = 1:3)
+
+par(mfrow = c(3, 1),  mar = c(5, 5, 2.5, 0.1))
+for (i in 1:length(model_fms)) {
+  ## plot observed vs predicted
+  plot(x = test$lprot, y = predict(model[[i]], newdata = test),
+       pch=20, xlab = 'Observed', ylab = 'Predicted', 
+       main = paste0('Test set (Variables: ', names(model_fms[i]), ')'))
+  abline(0, 1)
+  text(-1.5, 3, sprintf("R2 = %.4f", round(r.squared[[i]], 4)))
+}
+```
