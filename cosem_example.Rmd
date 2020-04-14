@@ -1,6 +1,8 @@
 ---
 title: "Predicting protein expression with model based boosting"
-output: html_notebook
+output:
+  html_document:
+    df_print: paged
 ---
 
 This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook for the "Springer chapter Tailoring codon usage to the underlying biology for protein expression optimization". When you execute code within the notebook, the results appear beneath the code. 
@@ -8,7 +10,9 @@ This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook for the "Springer
 This notebook relies on the `mboost` package. If you have not installed it, just run
 
 ```{r}
-install.packages('mboost')
+if(FALSE) {
+  install.packages('mboost')
+}
 ```
 
 Our goal is to predict the protein expression based on sequence features. You can either start from scratch, but this means you have to calculate the sequence based predictors first, e.g. for a completely new organism, or you might want to re-train parts of the model for. 
